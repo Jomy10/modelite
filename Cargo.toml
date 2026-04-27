@@ -1,6 +1,6 @@
 [package]
 name = "modelite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Automatically generate create table and other SQLite queries for a struct"
 repository = "https://github.com/jomy10/modelite"
