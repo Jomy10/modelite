@@ -1,5 +1,8 @@
 # Modelite
 
+![Crates.io License](https://img.shields.io/crates/l/modelite)
+![Crates.io Version](https://img.shields.io/crates/v/modelite)
+
 Modelite defines traits and macros to generate SQL queries as strings, or to be used with
 [sqlx](https://github.com/launchbadge/sqlx) (with feature "sqlx", enabled by default).
 
