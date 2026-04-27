@@ -1,0 +1,19 @@
+[package]
+name = "modelite-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Macros for modelite"
+repository = "https://github.com/jomy10/modelite"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.106"
+quote = "1.0.45"
+syn = { version = "2.0.117", features = ["full"] }
+
+[features]
+default = ["sqlx"]
+sqlx = []
