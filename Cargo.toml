@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 sqlx = { version = "0.8.6", features = ["sqlite"], optional = true }
-modelite-macros = { path = "macro" }
+modelite-macros = { path = "macro", version = "0.1.0" }
 
 [features]
 default = ["sqlx"]
