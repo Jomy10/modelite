@@ -38,7 +38,6 @@ pub fn derive_basemodel(input: TokenStream) -> TokenStream {
 fn basemodel_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
     let name_str = name.to_string();
 
-    let fields_len = fields.len();
     let fields_parsed = fields.iter().map(|field| (field.ident.as_ref().unwrap(), &field.ty, is_optional(&field.ty)));
     let field_names = fields_parsed.clone().map(|field| field.0.to_string());
     let field_decls = fields_parsed.map(|field| {
@@ -52,8 +51,8 @@ fn basemodel_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
     });
 
     let stream = quote! {
-        impl ::modelite::BaseModel<#fields_len> for #name {
-            const COLUMNS: [&'static str; #fields_len] = [#(#field_names,)*];
+        impl ::modelite::BaseModel for #name {
+            const COLUMNS: &'static [&'static str] = &[#(#field_names,)*];
 
             fn table_name() -> String {
                 #name_str.to_string()
@@ -93,8 +92,6 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 
 #[cfg(feature = "sqlx")]
 fn model_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
-    let fields_len = fields.len();
-
     let push_binds = fields.iter().map(|field| {
         let field = field.ident.as_ref().unwrap();
         quote! {
@@ -103,13 +100,14 @@ fn model_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
     });
 
     quote! {
-        impl ::modelite::Model<#fields_len> for #name {
-            async fn insert_bulk<'e, 'a, E>(e: E, values: impl ::core::iter::IntoIterator<Item = &'a Self>) -> ::core::result::Result<::sqlx::sqlite::SqliteQueryResult, ::sqlx::Error>
+        impl ::modelite::Model for #name {
+            async fn insert_bulk<'e, 's, E>(e: E, values: impl ::core::iter::IntoIterator<Item = &'s Self>) -> ::core::result::Result<::sqlx::sqlite::SqliteQueryResult, ::sqlx::Error>
                 where
-                    Self: 'a,
-                    E: ::sqlx::Executor<'a, Database = ::sqlx::Sqlite>,
+                    Self: 'e,
+                    E: ::sqlx::Executor<'e, Database = ::sqlx::Sqlite>,
+                    'e: 's
             {
-                let mut qb = ::sqlx::QueryBuilder::new(Self::insert_sql());
+                let mut qb = ::sqlx::QueryBuilder::new(<Self as ::modelite::BaseModel>::insert_sql_template());
 
                 qb.push_values(values, |mut b, d| {
                     b #(#push_binds)*;
