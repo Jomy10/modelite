@@ -101,17 +101,14 @@ fn model_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
 
     quote! {
         impl ::modelite::Model for #name {
-            async fn insert_bulk<'e, 's, E>(e: E, values: impl ::core::iter::IntoIterator<Item = &'s Self>) -> ::core::result::Result<::sqlx::sqlite::SqliteQueryResult, ::sqlx::Error>
-                where
-                    Self: 'e,
-                    E: ::sqlx::Executor<'e, Database = ::sqlx::Sqlite>,
-                    'e: 's
-            {
-                let mut qb = ::sqlx::QueryBuilder::new(<Self as ::modelite::BaseModel>::insert_sql_template());
+            fn insert<'s>(values: impl ::core::iter::IntoIterator<Item = &'s Self>) -> ::modelite::ModeliteQuery<'s> {
+                let mut qb = ::sqlx::QueryBuilder::new(<Self as ::modelite::BaseModel>::insert_sql());
 
                 qb.push_values(values, |mut b, d| {
                     b #(#push_binds)*;
-                }).build().execute(e).await
+                });
+
+                ::modelite::ModeliteQuery::Builder(qb)
             }
         }
     }

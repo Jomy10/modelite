@@ -1,6 +1,6 @@
 [package]
 name = "modelite"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Automatically generate create table and other SQLite queries for a struct"
 repository = "https://github.com/jomy10/modelite"
@@ -8,11 +8,13 @@ license = "MIT"
 
 [dependencies]
 sqlx = { version = "0.8.6", features = ["sqlite"], optional = true }
-modelite-macros = { path = "macro", version = "0.1.0" }
+libsqlite3-sys = { version = "*", optional = true }
+modelite-macros = { path = "macro", version = "0.1.0", optional = true }
 
 [features]
-default = ["sqlx"]
-sqlx = ["dep:sqlx"]
+default = ["sqlx", "macro"]
+sqlx = ["dep:sqlx", "dep:libsqlite3-sys"]
+macro = ["dep:modelite-macros"]
 
 [workspace]
 resolver = "3"

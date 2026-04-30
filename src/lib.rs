@@ -1,11 +1,6 @@
 use std::cell::OnceCell;
 use std::iter::repeat_n;
 
-#[cfg(feature = "sqlx")]
-use sqlx::Executor;
-#[cfg(feature = "sqlx")]
-use sqlx::sqlite::SqliteQueryResult;
-
 pub use modelite_macros::{BaseModel, Model};
 
 pub struct QuotedColumns<'a> {
@@ -76,7 +71,11 @@ pub trait BaseModel {
     }
 
     fn insert_sql_template() -> String {
-        format!("insert into {} ({}) values ({})", Self::table_name(), Self::QUOTED_COLUMNS, Self::COLUMNS_TEMPLATE)
+        format!("{} values ({})", Self::insert_sql(), Self::COLUMNS_TEMPLATE)
+    }
+
+    fn insert_sql() -> String {
+        format!("insert into \"{}\" ({})", Self::table_name(), Self::QUOTED_COLUMNS)
     }
 
     fn select_sql() -> String {
@@ -89,28 +88,132 @@ pub trait BaseModel {
 }
 
 #[cfg(feature = "sqlx")]
-#[allow(async_fn_in_trait)]
-pub trait Model: BaseModel {
-    async fn insert_bulk<'e, 's, E>(e: E, values: impl IntoIterator<Item = &'s Self>) -> Result<SqliteQueryResult, sqlx::Error>
-        where
-            Self: 'e,
-            E: Executor<'e, Database = sqlx::Sqlite>,
-            'e: 's
-        ;
+mod sqlx_feature {
+    use std::borrow::Cow;
+    use std::ptr::NonNull;
 
-    async fn create_table<'e, E>(e: E) -> Result<SqliteQueryResult, sqlx::Error>
-        where
-            Self: 'e,
-            E: Executor<'e, Database = sqlx::Sqlite>,
-    {
-        sqlx::query(&Self::create_table_sql()).execute(e).await
+    use libsqlite3_sys::sqlite3;
+    use sqlx::query::Query;
+    use sqlx::{Executor, Pool, QueryBuilder, Sqlite, SqliteConnection};
+    use sqlx::pool::PoolConnection;
+    use sqlx::sqlite::{LockedSqliteHandle, SqliteQueryResult};
+
+    use crate::BaseModel;
+
+    pub trait IntoRawSqliteHandle {
+        fn into_raw_sqlite_handle(self) -> impl std::future::Future<Output = Result<NonNull<sqlite3>, sqlx::Error>> + Send;
     }
 
-    async fn drop_table<'e, E>(e: E) -> Result<SqliteQueryResult, sqlx::Error>
-        where
-            Self: 'e,
-            E: Executor<'e, Database = sqlx::Sqlite>,
-    {
-        sqlx::query(&Self::drop_table_sql()).execute(e).await
+    impl IntoRawSqliteHandle for &'_ mut LockedSqliteHandle<'_> {
+        async fn into_raw_sqlite_handle(self) -> Result<NonNull<sqlite3>, sqlx::Error> {
+            Ok(self.as_raw_handle())
+        }
+    }
+
+    impl IntoRawSqliteHandle for &'_ mut PoolConnection<Sqlite> {
+        async fn into_raw_sqlite_handle(self) -> Result<NonNull<sqlite3>, sqlx::Error> {
+            self.lock_handle().await
+                .map(|mut r| r.as_raw_handle())
+        }
+    }
+
+    impl IntoRawSqliteHandle for &'_ Pool<Sqlite> {
+        async fn into_raw_sqlite_handle(self) -> Result<NonNull<sqlite3>, sqlx::Error> {
+            let mut conn = match self.acquire().await {
+                Ok(conn) => conn,
+                Err(e) => return Err(e.into())
+            };
+            let mut lock_handle = match conn.lock_handle().await {
+                Ok(conn) => conn,
+                Err(e) => return Err(e)
+            };
+
+            Ok(lock_handle.as_raw_handle())
+        }
+    }
+
+    impl IntoRawSqliteHandle for &'_ mut SqliteConnection {
+        async fn into_raw_sqlite_handle(self) -> Result<NonNull<sqlite3>, sqlx::Error> {
+            self.lock_handle().await
+                .map(|mut r| r.as_raw_handle())
+        }
+    }
+
+    type SqliteQuery<'q> = Query<'q, Sqlite, <Sqlite as sqlx::Database>::Arguments<'q>>;
+
+    pub enum ModeliteQuery<'a> {
+        Builder(QueryBuilder<'a, Sqlite>),
+        Query(Cow<'a, str>),
+    }
+
+    impl<'a> ModeliteQuery<'a> {
+        /// Execute the query
+        pub async fn execute<'e, 'c: 'e, E: Executor<'c, Database = Sqlite>>(self, e: E) -> Result<SqliteQueryResult, sqlx::Error>
+            where 'a: 'e
+        {
+            match self {
+                ModeliteQuery::Builder(mut qb) => qb.build().execute(e).await,
+                ModeliteQuery::Query(query_str) => sqlx::query(&query_str).execute(e).await,
+            }
+        }
+
+        /// Builds and returns the query as an `sqlx::Query`
+        pub fn build(&mut self) -> SqliteQuery<'_> {
+            match self {
+                ModeliteQuery::Builder(qb) => qb.build(),
+                ModeliteQuery::Query(query_str) => sqlx::query(query_str),
+            }
+        }
+    }
+
+    struct BulkQueryIterator<'s, M: Model + ?Sized + 's, I: Iterator<Item = &'s M>> {
+        iter: I,
+        chunk_size: usize,
+    }
+
+    impl<'s, M: Model + 's, I: Iterator<Item = &'s M>> Iterator for BulkQueryIterator<'s, M, I> {
+        type Item = ModeliteQuery<'s>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let mut chunk = self.iter.by_ref().take(self.chunk_size).peekable();
+            if chunk.peek().is_none() { return None; }
+            Some(M::insert(chunk))
+        }
+    }
+
+    pub trait Model: BaseModel + 'static {
+        fn insert<'s>(values: impl IntoIterator<Item = &'s Self>) -> ModeliteQuery<'s>;
+
+        // Chunks values up into multiple inserts if necessary
+        fn insert_bulk<'s, H: IntoRawSqliteHandle, I: IntoIterator<Item = &'s Self>>(h: H, values: I) -> impl Future<Output = Result<BulkQueryIterator<'s, Self, I::IntoIter>, sqlx::Error>> {
+            impl_insert_bulk(h, values)
+        }
+
+        fn create_table<'s>() -> ModeliteQuery<'s> {
+            ModeliteQuery::Query(Self::create_table_sql().into())
+        }
+
+        fn drop_table<'s>() -> ModeliteQuery<'s> {
+            ModeliteQuery::Query(Self::drop_table_sql().into())
+        }
+    }
+
+    #[inline]
+    async fn impl_insert_bulk<'s, H: IntoRawSqliteHandle, I: IntoIterator<Item = &'s M>, M: Model + ?Sized>(h: H, values: I) -> Result<BulkQueryIterator<'s, M, I::IntoIter>, sqlx::Error> {
+        use libsqlite3_sys::{sqlite3_limit, SQLITE_LIMIT_VARIABLE_NUMBER};
+
+        let raw_conn: NonNull<sqlite3> = h.into_raw_sqlite_handle().await?;
+
+        let max_variables = unsafe { sqlite3_limit(raw_conn.as_ptr(), SQLITE_LIMIT_VARIABLE_NUMBER, -1) } as usize;
+        let variables_per_row = M::COLUMNS.len();
+
+        let max_variables = max_variables - (max_variables % variables_per_row);
+
+        Ok(BulkQueryIterator {
+            iter: values.into_iter(),
+            chunk_size: max_variables,
+        })
     }
 }
+
+pub use sqlx_feature::*;
