@@ -18,11 +18,11 @@ struct Person {
 async fn main() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     
-    Person::create_table(&pool);
+    Person::create_table().connect(&pool);
     Person::insert_bulk(&pool, &[Person {
         name: String::from("Steven"),
         age: 35,
         nickname: None
-    }]);
+    }]).execute_all(&pool);
 }
 ```
