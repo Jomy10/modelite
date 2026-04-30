@@ -9,11 +9,15 @@ license = "MIT"
 [dependencies]
 sqlx = { version = "0.8.6", features = ["sqlite"], optional = true }
 libsqlite3-sys = { version = "*", optional = true }
-modelite-macros = { path = "macro", version = "0.1.0", optional = true }
+modelite-macros = { path = "macro", version = "0.2.0", optional = true }
+futures-core = { version = "0.3.32", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.52.1", features = ["rt"] }
 
 [features]
 default = ["sqlx", "macro"]
-sqlx = ["dep:sqlx", "dep:libsqlite3-sys"]
+sqlx = ["dep:sqlx", "dep:libsqlite3-sys", "dep:futures-core"]
 macro = ["dep:modelite-macros"]
 
 [workspace]

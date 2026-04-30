@@ -87,16 +87,48 @@ pub trait BaseModel {
     }
 }
 
+/// Execute all queries in a bulk query (see `Model::insert_bulk`).
+///
+/// # Example
+/// ```ignore
+/// # use modelite::{Model, execute_all};
+/// # let conn = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+///
+/// #[derive(Model)]
+/// struct Person {
+///     name: String,
+///     age: u32
+/// }
+///
+/// let query = Person::insert_bulk(&conn, vec![Person { name: "John Johnson".to_string(), age: 43 }, /* more entries*/].iter()).await.unwrap();
+/// execute_all!(&conn, query).await.unwrap();
+/// ```
+#[cfg(feature = "sqlx")]
+#[macro_export]
+macro_rules! execute_all {
+    ($bulk_query_iterator: expr, $executor: expr) => {
+        async {
+            for query in $bulk_query_iterator {
+                query.execute($executor).await?;
+            }
+
+            Ok::<(), sqlx::Error>(())
+        }
+        // ::futures::future::try_join_all($bulk_query_iterator.map(async |q: ::modelite::ModeliteQuery<'_>| q.execute($executor).await))
+    }
+}
+
 #[cfg(feature = "sqlx")]
 mod sqlx_feature {
     use std::borrow::Cow;
     use std::ptr::NonNull;
 
+    use futures_core::stream::BoxStream;
     use libsqlite3_sys::sqlite3;
-    use sqlx::query::Query;
-    use sqlx::{Executor, Pool, QueryBuilder, Sqlite, SqliteConnection};
+    use sqlx::query::{Query, QueryAs};
+    use sqlx::{Executor, FromRow, Pool, QueryBuilder, Sqlite, SqliteConnection};
     use sqlx::pool::PoolConnection;
-    use sqlx::sqlite::{LockedSqliteHandle, SqliteQueryResult};
+    use sqlx::sqlite::{LockedSqliteHandle, SqliteQueryResult, SqliteRow};
 
     use crate::BaseModel;
 
@@ -140,6 +172,7 @@ mod sqlx_feature {
     }
 
     type SqliteQuery<'q> = Query<'q, Sqlite, <Sqlite as sqlx::Database>::Arguments<'q>>;
+    type SqliteQueryAs<'q, T> = QueryAs<'q, Sqlite, T, <Sqlite as sqlx::Database>::Arguments<'q>>;
 
     pub enum ModeliteQuery<'a> {
         Builder(QueryBuilder<'a, Sqlite>),
@@ -148,13 +181,43 @@ mod sqlx_feature {
 
     impl<'a> ModeliteQuery<'a> {
         /// Execute the query
-        pub async fn execute<'e, 'c: 'e, E: Executor<'c, Database = Sqlite>>(self, e: E) -> Result<SqliteQueryResult, sqlx::Error>
-            where 'a: 'e
+        pub async fn execute<'c, E: Executor<'c, Database = Sqlite>>(mut self, e: E) -> Result<SqliteQueryResult, sqlx::Error> {
+            self.build().execute(e).await
+        }
+
+        /// Fetch all rows into a vec
+        pub async fn fetch_all<'c, E: Executor<'c, Database = Sqlite>>(mut self, e: E) -> Result<Vec<SqliteRow>, sqlx::Error> {
+            self.build().fetch_all(e).await
+        }
+
+        /// Fetch one row
+        pub async fn fetch_one<'c, E: Executor<'c, Database = Sqlite>>(mut self, e: E) -> Result<SqliteRow, sqlx::Error> {
+            self.build().fetch_one(e).await
+        }
+
+        /// Fetch all rows as a stream
+        pub async fn fetch<E: Executor<'a, Database = Sqlite>>(&'a mut self, e: E) -> BoxStream<'a, Result<SqliteRow, sqlx::Error>> {
+            self.build().fetch(e)
+        }
+
+        pub async fn fetch_all_as<'c, E: Executor<'c, Database = Sqlite>, T>(&'a mut self, e: E) -> Result<Vec<T>, sqlx::Error>
+            where T: for<'r> FromRow<'r, <Sqlite as sqlx::Database>::Row> + Send + Sync + Unpin,
         {
-            match self {
-                ModeliteQuery::Builder(mut qb) => qb.build().execute(e).await,
-                ModeliteQuery::Query(query_str) => sqlx::query(&query_str).execute(e).await,
-            }
+            self.build_as().fetch_all(e).await
+        }
+
+        pub async fn fetch_one_as<'c, E: Executor<'c, Database = Sqlite>, T>(&'a mut self, e: E) -> Result<T, sqlx::Error>
+            where T: for<'r> FromRow<'r, <Sqlite as sqlx::Database>::Row> + Send + Sync + Unpin,
+        {
+            self.build_as().fetch_one(e).await
+        }
+
+        pub async fn fetch_as<'c, E: Executor<'a, Database = Sqlite> + 'c, T>(&'a mut self, e: E) -> BoxStream<'c, Result<T, sqlx::Error>>
+            where
+                T: for<'r> FromRow<'r, <Sqlite as sqlx::Database>::Row> + Send + Sync + Unpin + 'c,
+                'a: 'c
+        {
+            self.build_as().fetch(e)
         }
 
         /// Builds and returns the query as an `sqlx::Query`
@@ -164,9 +227,18 @@ mod sqlx_feature {
                 ModeliteQuery::Query(query_str) => sqlx::query(query_str),
             }
         }
+
+        pub fn build_as<'c, T>(&'a mut self) -> SqliteQueryAs<'a, T>
+            where T: for<'r> FromRow<'r, <Sqlite as sqlx::Database>::Row>,
+        {
+            match self {
+                ModeliteQuery::Builder(qb) => qb.build_query_as(),
+                ModeliteQuery::Query(query_str) => sqlx::query_as(query_str),
+            }
+        }
     }
 
-    struct BulkQueryIterator<'s, M: Model + ?Sized + 's, I: Iterator<Item = &'s M>> {
+    pub struct BulkQueryIterator<'s, M: Model + ?Sized + 's, I: Iterator<Item = &'s M>> {
         iter: I,
         chunk_size: usize,
     }
@@ -181,10 +253,20 @@ mod sqlx_feature {
         }
     }
 
+    impl <'s, M: Model + 's, I: Iterator<Item = &'s M>> BulkQueryIterator<'s, M, I> {
+        pub async fn execute_all(self, e: &sqlx::Pool<Sqlite>) -> Result<Vec<SqliteQueryResult>, sqlx::Error> {
+            let mut vec = Vec::new();
+            for r in self.map(|q| q.execute(e)) {
+                vec.push(r.await?)
+            }
+            return Ok(vec);
+        }
+    }
+
     pub trait Model: BaseModel + 'static {
         fn insert<'s>(values: impl IntoIterator<Item = &'s Self>) -> ModeliteQuery<'s>;
 
-        // Chunks values up into multiple inserts if necessary
+        // Chunks values up into multiple inserts if necessary (based on SQLITE_LIMIT_VARIABLE_NUMBER)
         fn insert_bulk<'s, H: IntoRawSqliteHandle, I: IntoIterator<Item = &'s Self>>(h: H, values: I) -> impl Future<Output = Result<BulkQueryIterator<'s, Self, I::IntoIter>, sqlx::Error>> {
             impl_insert_bulk(h, values)
         }
@@ -195,6 +277,10 @@ mod sqlx_feature {
 
         fn drop_table<'s>() -> ModeliteQuery<'s> {
             ModeliteQuery::Query(Self::drop_table_sql().into())
+        }
+
+        fn select_all<'s>() -> ModeliteQuery<'s> {
+            ModeliteQuery::Query(Self::select_sql().into())
         }
     }
 
@@ -211,7 +297,7 @@ mod sqlx_feature {
 
         Ok(BulkQueryIterator {
             iter: values.into_iter(),
-            chunk_size: max_variables,
+            chunk_size: max_variables / variables_per_row,
         })
     }
 }

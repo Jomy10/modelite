@@ -1,4 +1,18 @@
 use modelite::{BaseModel, Model};
+#[cfg(feature = "sqlx")]
+use sqlx::prelude::FromRow;
+
+#[cfg(feature = "sqlx")]
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use tokio::runtime;
+
+    let rt = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(future)
+}
 
 #[derive(BaseModel)]
 #[allow(unused)]
@@ -15,9 +29,29 @@ fn test_basemodel() {
     assert_eq!(Student::create_table_sql(), r#"CREATE TABLE IF NOT EXISTS "Student" ("name" TEXT NOT NULL, "age" INTEGER NULL)"#);
 }
 
-#[derive(Model)]
-#[allow(unused)]
+#[cfg_attr(feature = "sqlx", derive(FromRow))]
+#[derive(Model, Debug, PartialEq)]
 struct Dog {
     pub name: String,
     pub species: Option<String>
+}
+
+#[cfg(feature = "sqlx")]
+#[test]
+fn test_execute_all() {
+    use sqlx::Connection;
+
+    block_on(async {
+        let mut conn = sqlx::SqliteConnection::connect(":memory:").await?;
+        let dog = Dog { name: "Good boy".to_string(), species: None };
+        Dog::drop_table().execute(&mut conn).await?;
+        Dog::create_table().execute(&mut conn).await?;
+        let query = Dog::insert_bulk(&mut conn, vec![&dog]).await?;
+        modelite::execute_all!(query, &mut conn).await?;
+
+        let docs: Vec<Dog> = Dog::select_all().fetch_all_as(&mut conn).await?;
+        assert_eq!(docs, vec![dog]);
+
+        Ok::<(), sqlx::Error>(())
+    }).unwrap();
 }

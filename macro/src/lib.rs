@@ -35,6 +35,7 @@ pub fn derive_basemodel(input: TokenStream) -> TokenStream {
     TokenStream::from(basemodel_tokens(name, fields))
 }
 
+// TODO: #[unique], #[primary_key], #[foreign_key(Other::id)]
 fn basemodel_tokens(name: &Ident, fields: &Fields) -> TokenStream2 {
     let name_str = name.to_string();
 
