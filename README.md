@@ -18,7 +18,7 @@ struct Person {
 async fn main() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     
-    Person::create_table().connect(&pool);
+    Person::create_table().execute(&pool);
     Person::insert_bulk(&pool, &[Person {
         name: String::from("Steven"),
         age: 35,
