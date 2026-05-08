@@ -3,7 +3,7 @@ name = "modelite"
 version = "0.2.0"
 edition = "2024"
 description = "Automatically generate create table and other SQLite queries for a struct"
-repository = "https://github.com/jomy10/modelite"
+repository = "https://codeberg.org/Jomy10/modelite"
 license = "MIT"
 
 [dependencies]

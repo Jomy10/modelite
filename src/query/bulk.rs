@@ -18,7 +18,7 @@ impl<'s, M: Model + 's, I: Iterator<Item = &'s M>> Iterator for BulkQueryIterato
     }
 }
 
-impl <'s, M: Model + 's, I: Iterator<Item = &'s M>> BulkQueryIterator<'s, M, I> {
+impl<'s, M: Model + 's, I: Iterator<Item = &'s M>> BulkQueryIterator<'s, M, I> {
     pub async fn execute_all(self, e: &sqlx::Pool<Sqlite>) -> Result<Vec<SqliteQueryResult>, sqlx::Error> {
         let mut vec = Vec::new();
         for mut query in self {
