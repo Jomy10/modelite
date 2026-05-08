@@ -26,7 +26,7 @@ fn test_basemodel() {
     assert_eq!(Student::table_name(), "Student");
     assert_eq!(Student::COLUMNS, ["name", "age"]);
 
-    assert_eq!(Student::create_table_sql(), r#"CREATE TABLE IF NOT EXISTS "Student" ("name" TEXT NOT NULL, "age" INTEGER NULL)"#);
+    assert_eq!(Student::create_table_sql(), r#"create table if not exists "Student" ("name" TEXT NOT NULL, "age" INTEGER NULL)"#);
 }
 
 #[cfg_attr(feature = "sqlx", derive(FromRow))]
@@ -46,11 +46,42 @@ fn test_execute_all() {
         let dog = Dog { name: "Good boy".to_string(), species: None };
         Dog::drop_table().execute(&mut conn).await?;
         Dog::create_table().execute(&mut conn).await?;
+        println!("{}", Dog::insert_sql());
         let query = Dog::insert_bulk(&mut conn, vec![&dog]).await?;
         modelite::execute_all!(query, &mut conn).await?;
 
-        let docs: Vec<Dog> = Dog::select_all().fetch_all_as(&mut conn).await?;
+        let docs: Vec<Dog> = Dog::select_all().fetch_all(&mut conn).await?;
         assert_eq!(docs, vec![dog]);
+
+        Ok::<(), sqlx::Error>(())
+    }).unwrap();
+}
+
+
+#[derive(Model)]
+#[unique(country, place, street, house_number)]
+struct House {
+    country: String,
+    place: String,
+    street: String,
+    house_number: String,
+}
+
+#[cfg(feature = "sqlx")]
+#[test]
+fn test_unique() {
+    block_on(async {
+        let conn = sqlx::SqlitePool::connect(":memory:").await?;
+        let house1 = House { country: "BE".to_string(), place: "Luxemburg".to_string(), street: "la rue".to_string(), house_number: "96A".to_string() };
+        let house2 = House { country: "BE".to_string(), place: "Luxemburg".to_string(), street: "la rue".to_string(), house_number: "96B".to_string() };
+
+        House::create_table().execute(&conn).await?;
+
+        House::insert(&house1).execute(&conn).await?;
+        House::insert(&house2).execute(&conn).await?;
+        assert!(
+            House::insert(&house1).execute(&conn).await.is_err()
+        );
 
         Ok::<(), sqlx::Error>(())
     }).unwrap();
